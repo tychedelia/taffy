@@ -152,13 +152,42 @@ pub trait TraversePartialTree {
         Self: 'a;
 
     /// Get the list of children IDs for the given node
-    fn child_ids(&self, parent_node_id: NodeId) -> Self::ChildIter<'_>;
+    ///
+    /// Returns `Err(TaffyError::InvalidParentNode)` if the parent node does not exist.
+    fn try_child_ids(&self, parent_node_id: NodeId) -> Result<Self::ChildIter<'_>, crate::TaffyError>;
 
     /// Get the number of children for the given node
-    fn child_count(&self, parent_node_id: NodeId) -> usize;
+    /// 
+    /// Returns `Err(TaffyError::InvalidParentNode)` if the parent node does not exist.
+    fn try_child_count(&self, parent_node_id: NodeId) -> Result<usize, crate::TaffyError>;
 
     /// Get a specific child of a node, where the index represents the nth child
-    fn get_child_id(&self, parent_node_id: NodeId, child_index: usize) -> NodeId;
+    ///
+    /// Returns `Err(TaffyError::InvalidParentNode)` if the parent node does not exist.
+    /// Returns `Err(TaffyError::ChildIndexOutOfBounds)` if the child index is out of bounds.
+    fn try_get_child_id(&self, parent_node_id: NodeId, child_index: usize) -> Result<NodeId, crate::TaffyError>;
+
+    /// Get the list of children IDs for the given node
+    ///
+    /// Panics if the parent node does not exist. Use [`try_child_ids`](Self::try_child_ids) for a fallible version.
+    fn child_ids(&self, parent_node_id: NodeId) -> Self::ChildIter<'_> {
+        self.try_child_ids(parent_node_id).unwrap()
+    }
+
+    /// Get the number of children for the given node
+    ///
+    /// Panics if the parent node does not exist. Use [`try_child_count`](Self::try_child_count) for a fallible version.
+    fn child_count(&self, parent_node_id: NodeId) -> usize {
+        self.try_child_count(parent_node_id).unwrap()
+    }
+
+    /// Get a specific child of a node, where the index represents the nth child
+    ///
+    /// Panics if the parent node does not exist or the child index is out of bounds.
+    /// Use [`try_get_child_id`](Self::try_get_child_id) for a fallible version.
+    fn get_child_id(&self, parent_node_id: NodeId, child_index: usize) -> NodeId {
+        self.try_get_child_id(parent_node_id, child_index).unwrap()
+    }
 }
 
 /// A marker trait which extends `TraversePartialTree`

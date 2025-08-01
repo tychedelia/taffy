@@ -169,6 +169,7 @@ impl Default for TaffyTree {
 }
 
 /// Iterator that wraps a slice of nodes, lazily converting them to u64
+#[derive(Debug)]
 pub struct TaffyTreeChildIter<'a>(core::slice::Iter<'a, NodeId>);
 impl Iterator for TaffyTreeChildIter<'_> {
     type Item = NodeId;
@@ -187,18 +188,35 @@ impl<NodeContext> TraversePartialTree for TaffyTree<NodeContext> {
         Self: 'a;
 
     #[inline(always)]
-    fn child_ids(&self, parent_node_id: NodeId) -> Self::ChildIter<'_> {
-        TaffyTreeChildIter(self.children[parent_node_id.into()].iter())
+    fn try_child_ids(&self, parent_node_id: NodeId) -> Result<Self::ChildIter<'_>, TaffyError> {
+        self.children
+            .get(parent_node_id.into())
+            .map(|children| TaffyTreeChildIter(children.iter()))
+            .ok_or(TaffyError::InvalidParentNode(parent_node_id))
     }
 
     #[inline(always)]
-    fn child_count(&self, parent_node_id: NodeId) -> usize {
-        self.children[parent_node_id.into()].len()
+    fn try_child_count(&self, parent_node_id: NodeId) -> Result<usize, TaffyError> {
+        self.children
+            .get(parent_node_id.into())
+            .map(|children| children.len())
+            .ok_or(TaffyError::InvalidParentNode(parent_node_id))
     }
 
     #[inline(always)]
-    fn get_child_id(&self, parent_node_id: NodeId, id: usize) -> NodeId {
-        self.children[parent_node_id.into()][id]
+    fn try_get_child_id(&self, parent_node_id: NodeId, child_index: usize) -> Result<NodeId, TaffyError> {
+        let children = self.children
+            .get(parent_node_id.into())
+            .ok_or(TaffyError::InvalidParentNode(parent_node_id))?;
+        
+        children
+            .get(child_index)
+            .copied()
+            .ok_or(TaffyError::ChildIndexOutOfBounds {
+                parent: parent_node_id,
+                child_index,
+                child_count: children.len(),
+            })
     }
 }
 
@@ -295,18 +313,18 @@ where
         Self: 'a;
 
     #[inline(always)]
-    fn child_ids(&self, parent_node_id: NodeId) -> Self::ChildIter<'_> {
-        self.taffy.child_ids(parent_node_id)
+    fn try_child_ids(&self, parent_node_id: NodeId) -> Result<Self::ChildIter<'_>, TaffyError> {
+        self.taffy.try_child_ids(parent_node_id)
     }
 
     #[inline(always)]
-    fn child_count(&self, parent_node_id: NodeId) -> usize {
-        self.taffy.child_count(parent_node_id)
+    fn try_child_count(&self, parent_node_id: NodeId) -> Result<usize, TaffyError> {
+        self.taffy.try_child_count(parent_node_id)
     }
 
     #[inline(always)]
-    fn get_child_id(&self, parent_node_id: NodeId, child_index: usize) -> NodeId {
-        self.taffy.get_child_id(parent_node_id, child_index)
+    fn try_get_child_id(&self, parent_node_id: NodeId, child_index: usize) -> Result<NodeId, TaffyError> {
+        self.taffy.try_get_child_id(parent_node_id, child_index)
     }
 }
 
@@ -733,6 +751,27 @@ impl<NodeContext> TaffyTree<NodeContext> {
         self.remove_child_at_index(parent, index)
     }
 
+    /// Removes the `child` of the parent `node`
+    ///
+    /// This is the fallible version of [`Self::remove_child`].
+    ///
+    /// The child is not removed from the tree entirely, it is simply no longer attached to its previous parent.
+    ///
+    /// Returns `Err(TaffyError::InvalidParentNode)` if the parent node does not exist.
+    /// Returns `Err(TaffyError::InvalidChildNode)` if the child node is not found in the parent's children.
+    pub fn try_remove_child(&mut self, parent: NodeId, child: NodeId) -> TaffyResult<NodeId> {
+        let parent_children = self.children
+            .get(parent.into())
+            .ok_or(TaffyError::InvalidParentNode(parent))?;
+        
+        let index = parent_children
+            .iter()
+            .position(|n| *n == child)
+            .ok_or(TaffyError::InvalidChildNode(child))?;
+        
+        self.remove_child_at_index(parent, index)
+    }
+
     /// Removes the child at the given `index` from the `parent`
     ///
     /// The child is not removed from the tree entirely, it is simply no longer attached to its previous parent.
@@ -821,9 +860,26 @@ impl<NodeContext> TaffyTree<NodeContext> {
         self.parents[child_id.into()]
     }
 
+    /// Returns the `NodeId` of the parent node of the specified node (if it exists)
+    ///
+    /// This is the fallible version of [`Self::parent`].
+    ///
+    /// - Returns `Ok(None)` if the specified node has no parent
+    /// - Returns `Err(TaffyError::InvalidInputNode)` if the specified node does not exist
+    #[inline]
+    pub fn try_parent(&self, child_id: NodeId) -> TaffyResult<Option<NodeId>> {
+        self.parents
+            .get(child_id.into())
+            .copied()
+            .ok_or(TaffyError::InvalidInputNode(child_id))
+    }
+
     /// Returns a list of children that belong to the parent node
     pub fn children(&self, parent: NodeId) -> TaffyResult<Vec<NodeId>> {
-        Ok(self.children[parent.into()].clone())
+        self.children
+            .get(parent.into())
+            .map(|children| children.clone())
+            .ok_or(TaffyError::InvalidParentNode(parent))
     }
 
     /// Sets the [`Style`] of the provided `node`
@@ -856,6 +912,19 @@ impl<NodeContext> TaffyTree<NodeContext> {
         &self.nodes[node.into()].unrounded_layout
     }
 
+    /// Returns this node layout with unrounded values relative to its parent.
+    ///
+    /// This is the fallible version of [`Self::unrounded_layout`].
+    ///
+    /// Returns `Err(TaffyError::InvalidInputNode)` if the specified node does not exist.
+    #[inline]
+    pub fn try_unrounded_layout(&self, node: NodeId) -> TaffyResult<&Layout> {
+        self.nodes
+            .get(node.into())
+            .map(|node_data| &node_data.unrounded_layout)
+            .ok_or(TaffyError::InvalidInputNode(node))
+    }
+
     /// Get the "detailed layout info" for a node.
     ///
     /// Currently this is only implemented for CSS Grid containers where it contains
@@ -864,6 +933,23 @@ impl<NodeContext> TaffyTree<NodeContext> {
     #[inline]
     pub fn detailed_layout_info(&self, node_id: NodeId) -> &DetailedLayoutInfo {
         &self.nodes[node_id.into()].detailed_layout_info
+    }
+
+    /// Get the "detailed layout info" for a node.
+    ///
+    /// This is the fallible version of [`Self::detailed_layout_info`].
+    ///
+    /// Currently this is only implemented for CSS Grid containers where it contains
+    /// the computed size of each grid track and the computed placement of each grid item.
+    ///
+    /// Returns `Err(TaffyError::InvalidInputNode)` if the specified node does not exist.
+    #[cfg(feature = "detailed_layout_info")]
+    #[inline]
+    pub fn try_detailed_layout_info(&self, node_id: NodeId) -> TaffyResult<&DetailedLayoutInfo> {
+        self.nodes
+            .get(node_id.into())
+            .map(|node_data| &node_data.detailed_layout_info)
+            .ok_or(TaffyError::InvalidInputNode(node_id))
     }
 
     /// Marks the layout of this node and its ancestors as outdated
@@ -943,6 +1029,7 @@ mod tests {
     use crate::style::{Dimension, Display, FlexDirection};
     use crate::style_helpers::*;
     use crate::util::sys;
+    use slotmap::Key;
 
     fn size_measure_function(
         known_dimensions: Size<Option<f32>>,
@@ -1398,5 +1485,231 @@ mod tests {
         taffy.set_children(new_parent, &[child]).unwrap();
 
         assert!(taffy.children(old_parent).unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_try_parent_valid_node() {
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let child = taffy.new_leaf(Style::default()).unwrap();
+        let parent = taffy.new_with_children(Style::default(), &[child]).unwrap();
+
+        let result = taffy.try_parent(child);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Some(parent));
+    }
+
+    #[test]
+    fn test_try_parent_orphan_node() {
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+
+        let result = taffy.try_parent(node);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), None);
+    }
+
+    #[test]
+    fn test_try_parent_invalid_node() {
+        let taffy: TaffyTree<()> = TaffyTree::new();
+        let invalid_node = NodeId::from(slotmap::DefaultKey::null());
+
+        let result = taffy.try_parent(invalid_node);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), TaffyError::InvalidInputNode(invalid_node));
+    }
+
+    #[test]
+    fn test_try_unrounded_layout_valid_node() {
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        taffy.compute_layout(node, Size::MAX_CONTENT).unwrap();
+
+        let result = taffy.try_unrounded_layout(node);
+        assert!(result.is_ok());
+        let layout = result.unwrap();
+        assert!(layout.size.width >= 0.0);
+        assert!(layout.size.height >= 0.0);
+    }
+
+    #[test]
+    fn test_try_unrounded_layout_invalid_node() {
+        let taffy: TaffyTree<()> = TaffyTree::new();
+        let invalid_node = NodeId::from(slotmap::DefaultKey::null());
+
+        let result = taffy.try_unrounded_layout(invalid_node);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), TaffyError::InvalidInputNode(invalid_node));
+    }
+
+    #[cfg(feature = "detailed_layout_info")]
+    #[test]
+    fn test_try_detailed_layout_info_valid_node() {
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        taffy.compute_layout(node, Size::MAX_CONTENT).unwrap();
+
+        let result = taffy.try_detailed_layout_info(node);
+        assert!(result.is_ok());
+        // The result should be a valid DetailedLayoutInfo reference
+        let _info = result.unwrap();
+    }
+
+    #[cfg(feature = "detailed_layout_info")]
+    #[test]
+    fn test_try_detailed_layout_info_invalid_node() {
+        let taffy: TaffyTree<()> = TaffyTree::new();
+        let invalid_node = NodeId::from(slotmap::DefaultKey::null());
+
+        let result = taffy.try_detailed_layout_info(invalid_node);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), TaffyError::InvalidInputNode(invalid_node));
+    }
+
+    #[test]
+    fn test_children_invalid_parent() {
+        let taffy: TaffyTree<()> = TaffyTree::new();
+        let invalid_node = NodeId::from(slotmap::DefaultKey::null());
+
+        let result = taffy.children(invalid_node);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), TaffyError::InvalidParentNode(invalid_node));
+    }
+
+    #[test]
+    fn test_try_remove_child_valid_nodes() {
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let child = taffy.new_leaf(Style::default()).unwrap();
+        let parent = taffy.new_with_children(Style::default(), &[child]).unwrap();
+
+        let result = taffy.try_remove_child(parent, child);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), child);
+        assert_eq!(taffy.child_count(parent), 0);
+    }
+
+    #[test]
+    fn test_try_remove_child_invalid_parent() {
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let child = taffy.new_leaf(Style::default()).unwrap();
+        let invalid_parent = NodeId::from(slotmap::DefaultKey::null());
+
+        let result = taffy.try_remove_child(invalid_parent, child);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), TaffyError::InvalidParentNode(invalid_parent));
+    }
+
+    #[test]
+    fn test_try_remove_child_child_not_found() {
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let child1 = taffy.new_leaf(Style::default()).unwrap();
+        let child2 = taffy.new_leaf(Style::default()).unwrap();
+        let parent = taffy.new_with_children(Style::default(), &[child1]).unwrap();
+
+        let result = taffy.try_remove_child(parent, child2);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), TaffyError::InvalidChildNode(child2));
+    }
+
+    #[test]
+    fn test_try_child_count_valid_parent() {
+        use crate::tree::TraversePartialTree;
+        
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let child1 = taffy.new_leaf(Style::default()).unwrap();
+        let child2 = taffy.new_leaf(Style::default()).unwrap();
+        let parent = taffy.new_with_children(Style::default(), &[child1, child2]).unwrap();
+
+        let result = taffy.try_child_count(parent);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 2);
+    }
+
+    #[test]
+    fn test_try_child_count_invalid_parent() {
+        use crate::tree::TraversePartialTree;
+        
+        let taffy: TaffyTree<()> = TaffyTree::new();
+        let invalid_parent = NodeId::from(slotmap::DefaultKey::null());
+
+        let result = taffy.try_child_count(invalid_parent);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), TaffyError::InvalidParentNode(invalid_parent));
+    }
+
+    #[test]
+    fn test_try_get_child_id_valid_indices() {
+        use crate::tree::TraversePartialTree;
+        
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let child1 = taffy.new_leaf(Style::default()).unwrap();
+        let child2 = taffy.new_leaf(Style::default()).unwrap();
+        let parent = taffy.new_with_children(Style::default(), &[child1, child2]).unwrap();
+
+        let result1 = taffy.try_get_child_id(parent, 0);
+        assert!(result1.is_ok());
+        assert_eq!(result1.unwrap(), child1);
+
+        let result2 = taffy.try_get_child_id(parent, 1);
+        assert!(result2.is_ok());
+        assert_eq!(result2.unwrap(), child2);
+    }
+
+    #[test]
+    fn test_try_get_child_id_invalid_parent() {
+        use crate::tree::TraversePartialTree;
+        
+        let taffy: TaffyTree<()> = TaffyTree::new();
+        let invalid_parent = NodeId::from(slotmap::DefaultKey::null());
+
+        let result = taffy.try_get_child_id(invalid_parent, 0);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), TaffyError::InvalidParentNode(invalid_parent));
+    }
+
+    #[test]
+    fn test_try_get_child_id_index_out_of_bounds() {
+        use crate::tree::TraversePartialTree;
+        
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let child = taffy.new_leaf(Style::default()).unwrap();
+        let parent = taffy.new_with_children(Style::default(), &[child]).unwrap();
+
+        let result = taffy.try_get_child_id(parent, 1);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            TaffyError::ChildIndexOutOfBounds { parent: p, child_index, child_count } => {
+                assert_eq!(p, parent);
+                assert_eq!(child_index, 1);
+                assert_eq!(child_count, 1);
+            }
+            _ => panic!("Expected ChildIndexOutOfBounds error"),
+        }
+    }
+
+    #[test]
+    fn test_try_child_ids_valid_parent() {
+        use crate::tree::TraversePartialTree;
+        
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let child1 = taffy.new_leaf(Style::default()).unwrap();
+        let child2 = taffy.new_leaf(Style::default()).unwrap();
+        let parent = taffy.new_with_children(Style::default(), &[child1, child2]).unwrap();
+
+        let result = taffy.try_child_ids(parent);
+        assert!(result.is_ok());
+        let children: Vec<NodeId> = result.unwrap().collect();
+        assert_eq!(children, vec![child1, child2]);
+    }
+
+    #[test]
+    fn test_try_child_ids_invalid_parent() {
+        use crate::tree::TraversePartialTree;
+        
+        let taffy: TaffyTree<()> = TaffyTree::new();
+        let invalid_parent = NodeId::from(slotmap::DefaultKey::null());
+
+        let result = taffy.try_child_ids(invalid_parent);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), TaffyError::InvalidParentNode(invalid_parent));
     }
 }
