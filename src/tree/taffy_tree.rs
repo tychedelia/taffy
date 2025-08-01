@@ -851,6 +851,12 @@ impl<NodeContext> TaffyTree<NodeContext> {
         self.nodes.len()
     }
 
+    /// Returns whether the given node exists in the tree
+    #[inline]
+    pub fn contains(&self, node: NodeId) -> bool {
+        self.nodes.contains_key(node.into())
+    }
+
     /// Returns the `NodeId` of the parent node of the specified node (if it exists)
     ///
     /// - Return None if the specified node has no parent
@@ -878,7 +884,7 @@ impl<NodeContext> TaffyTree<NodeContext> {
     pub fn children(&self, parent: NodeId) -> TaffyResult<Vec<NodeId>> {
         self.children
             .get(parent.into())
-            .map(|children| children.clone())
+            .cloned()
             .ok_or(TaffyError::InvalidParentNode(parent))
     }
 
@@ -891,22 +897,58 @@ impl<NodeContext> TaffyTree<NodeContext> {
     }
 
     /// Gets the [`Style`] of the provided `node`
+    ///
+    /// # Panics
+    /// Panics if the specified node does not exist. Use [`Self::try_style`] for a fallible version.
     #[inline]
     pub fn style(&self, node: NodeId) -> TaffyResult<&Style> {
-        Ok(&self.nodes[node.into()].style)
+        self.try_style(node)
+    }
+
+    /// Gets the [`Style`] of the provided `node`
+    ///
+    /// This is the fallible version of [`Self::style`].
+    ///
+    /// Returns `Err(TaffyError::InvalidInputNode)` if the specified node does not exist.
+    #[inline]
+    pub fn try_style(&self, node: NodeId) -> TaffyResult<&Style> {
+        self.nodes
+            .get(node.into())
+            .map(|node_data| &node_data.style)
+            .ok_or(TaffyError::InvalidInputNode(node))
     }
 
     /// Return this node layout relative to its parent
+    ///
+    /// # Panics
+    /// Panics if the specified node does not exist. Use [`Self::try_layout`] for a fallible version.
     #[inline]
     pub fn layout(&self, node: NodeId) -> TaffyResult<&Layout> {
+        self.try_layout(node)
+    }
+
+    /// Return this node layout relative to its parent
+    ///
+    /// This is the fallible version of [`Self::layout`].
+    ///
+    /// Returns `Err(TaffyError::InvalidInputNode)` if the specified node does not exist.
+    #[inline]
+    pub fn try_layout(&self, node: NodeId) -> TaffyResult<&Layout> {
+        let node_data = self.nodes
+            .get(node.into())
+            .ok_or(TaffyError::InvalidInputNode(node))?;
+        
         if self.config.use_rounding {
-            Ok(&self.nodes[node.into()].final_layout)
+            Ok(&node_data.final_layout)
         } else {
-            Ok(&self.nodes[node.into()].unrounded_layout)
+            Ok(&node_data.unrounded_layout)
         }
     }
 
     /// Returns this node layout with unrounded values relative to its parent.
+    ///
+    /// # Panics
+    /// Panics if the specified node does not exist. Use [`Self::try_unrounded_layout`] for a fallible version.
     #[inline]
     pub fn unrounded_layout(&self, node: NodeId) -> &Layout {
         &self.nodes[node.into()].unrounded_layout
@@ -929,6 +971,9 @@ impl<NodeContext> TaffyTree<NodeContext> {
     ///
     /// Currently this is only implemented for CSS Grid containers where it contains
     /// the computed size of each grid track and the computed placement of each grid item
+    ///
+    /// # Panics
+    /// Panics if the specified node does not exist. Use [`Self::try_detailed_layout_info`] for a fallible version.
     #[cfg(feature = "detailed_layout_info")]
     #[inline]
     pub fn detailed_layout_info(&self, node_id: NodeId) -> &DetailedLayoutInfo {
@@ -979,9 +1024,25 @@ impl<NodeContext> TaffyTree<NodeContext> {
     }
 
     /// Indicates whether the layout of this node needs to be recomputed
+    ///
+    /// # Panics
+    /// Panics if the specified node does not exist. Use [`Self::try_dirty`] for a fallible version.
     #[inline]
     pub fn dirty(&self, node: NodeId) -> TaffyResult<bool> {
-        Ok(self.nodes[node.into()].cache.is_empty())
+        self.try_dirty(node)
+    }
+
+    /// Indicates whether the layout of this node needs to be recomputed
+    ///
+    /// This is the fallible version of [`Self::dirty`].
+    ///
+    /// Returns `Err(TaffyError::InvalidInputNode)` if the specified node does not exist.
+    #[inline]
+    pub fn try_dirty(&self, node: NodeId) -> TaffyResult<bool> {
+        self.nodes
+            .get(node.into())
+            .map(|node_data| node_data.cache.is_empty())
+            .ok_or(TaffyError::InvalidInputNode(node))
     }
 
     /// Updates the stored layout of the provided `node` and its children
@@ -1711,5 +1772,96 @@ mod tests {
         let result = taffy.try_child_ids(invalid_parent);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), TaffyError::InvalidParentNode(invalid_parent));
+    }
+
+    #[test]
+    fn test_try_style_valid_node() {
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+
+        let result = taffy.try_style(node);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().display, Display::Flex); // Default display
+    }
+
+    #[test]
+    fn test_try_style_invalid_node() {
+        let taffy: TaffyTree<()> = TaffyTree::new();
+        let invalid_node = NodeId::from(slotmap::DefaultKey::null());
+
+        let result = taffy.try_style(invalid_node);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), TaffyError::InvalidInputNode(invalid_node));
+    }
+
+    #[test]
+    fn test_try_layout_valid_node() {
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        taffy.compute_layout(node, Size::MAX_CONTENT).unwrap();
+
+        let result = taffy.try_layout(node);
+        assert!(result.is_ok());
+        let layout = result.unwrap();
+        assert!(layout.size.width >= 0.0);
+        assert!(layout.size.height >= 0.0);
+    }
+
+    #[test]
+    fn test_try_layout_invalid_node() {
+        let taffy: TaffyTree<()> = TaffyTree::new();
+        let invalid_node = NodeId::from(slotmap::DefaultKey::null());
+
+        let result = taffy.try_layout(invalid_node);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), TaffyError::InvalidInputNode(invalid_node));
+    }
+
+    #[test]
+    fn test_try_dirty_valid_node() {
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+
+        let result = taffy.try_dirty(node);
+        assert!(result.is_ok());
+        assert!(result.unwrap()); // New nodes should be dirty
+    }
+
+    #[test]
+    fn test_try_dirty_invalid_node() {
+        let taffy: TaffyTree<()> = TaffyTree::new();
+        let invalid_node = NodeId::from(slotmap::DefaultKey::null());
+
+        let result = taffy.try_dirty(invalid_node);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), TaffyError::InvalidInputNode(invalid_node));
+    }
+
+    #[test]
+    fn test_contains_valid_node() {
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+
+        assert!(taffy.contains(node));
+    }
+
+    #[test]
+    fn test_contains_invalid_node() {
+        let taffy: TaffyTree<()> = TaffyTree::new();
+        let invalid_node = NodeId::from(slotmap::DefaultKey::null());
+
+        assert!(!taffy.contains(invalid_node));
+    }
+
+    #[test]
+    fn test_contains_removed_node() {
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        
+        assert!(taffy.contains(node));
+        
+        taffy.remove(node).unwrap();
+        
+        assert!(!taffy.contains(node));
     }
 }
