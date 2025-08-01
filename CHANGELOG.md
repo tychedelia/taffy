@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Add fallible `try_*` variants for TaffyTree methods that can panic on invalid NodeIds:
+  - `try_parent()` - fallible version of `parent()`
+  - `try_unrounded_layout()` - fallible version of `unrounded_layout()`
+  - `try_detailed_layout_info()` - fallible version of `detailed_layout_info()`
+  - `try_remove_child()` - fallible version of `remove_child()`
+- Add fallible `try_*` variants to `TraversePartialTree` trait:
+  - `try_child_ids()` - fallible version of `child_ids()`
+  - `try_child_count()` - fallible version of `child_count()`
+  - `try_get_child_id()` - fallible version of `get_child_id()`
+- Traditional panicking methods are now default implementations that call `try_*` variants and unwrap
+- All `try_*` methods return appropriate `TaffyError` variants instead of panicking
+
+### Changed
+
+- `children()` method now uses fallible indexing internally (was already returning `TaffyResult`)
+- `TraversePartialTree` trait now requires implementors to provide `try_*` methods as the primary implementations
+
 ## 0.9.1
 
 ### Fixed
